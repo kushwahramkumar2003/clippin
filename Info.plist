@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Run as a menu-bar agent: no Dock icon, no Cmd+Tab entry -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- High-resolution / retina capable -->
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- Do not use App Sandbox (required for CGEvent hotkeys / paste) -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+
+	<!-- Human-readable copyright (used when bundled) -->
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © ClipPin Contributors. MIT License.</string>
+</dict>
+</plist>
