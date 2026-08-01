@@ -34,17 +34,29 @@ cargo install --path . --locked
 
 ### Run
 
+**Detached (recommended)** — starts independently; you can close the terminal:
+
+```bash
+clippin --detach
+# or
+clippin -d
+```
+
+**Foreground** — keeps the terminal attached (useful for debugging):
+
 ```bash
 clippin
 ```
 
-ClipPin lives in the **menu bar** (no Dock icon). Leave it running, or turn on **Launch at login** in Settings so it starts automatically after reboot.
+ClipPin lives in the **menu bar** (no Dock icon).
 
-**Stop:** quit from the popover, or:
+**Launch at login** (Settings checkbox) installs a user LaunchAgent that starts ClipPin with `--detach` — no Terminal window at login.
 
-```bash
-pkill -x clippin
-```
+| | |
+|--|--|
+| **Stop** | Quit from the popover, or `pkill -x clippin` |
+| **Logs** | `~/Library/Logs/ClipPin/clippin.log` |
+| **Help** | `clippin --help` |
 
 ### Update
 

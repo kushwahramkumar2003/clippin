@@ -303,13 +303,34 @@ fn current_executable() -> Result<PathBuf, String> {
     fs::canonicalize(&exe).or_else(|_| Ok::<_, String>(exe))
 }
 
+fn launch_agent_log_path() -> Option<PathBuf> {
+    let home = dirs_home()?;
+    Some(
+        home.join("Library")
+            .join("Logs")
+            .join("ClipPin")
+            .join("clippin.log"),
+    )
+}
+
 fn launch_agent_plist_xml(program: &str) -> String {
-    // Escape XML special chars in path.
-    let program_xml = program
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;");
+    // Escape XML special chars in path / log path.
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let program_xml = esc(program);
+    // Prefer a real log path; fall back to /dev/null so launchd never
+    // attaches a console / Terminal window.
+    let log_xml = launch_agent_log_path()
+        .and_then(|p| p.to_str().map(|s| esc(s)))
+        .unwrap_or_else(|| "/dev/null".into());
+
+    // Launch with `--detach` so login never leaves a Terminal-attached process:
+    // launchd starts a short-lived parent that re-spawns ClipPin in a new
+    // session and exits. AbandonProcessGroup keeps the child alive.
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -320,15 +341,22 @@ fn launch_agent_plist_xml(program: &str) -> String {
 	<key>ProgramArguments</key>
 	<array>
 		<string>{program_xml}</string>
+		<string>--detach</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<false/>
+	<key>AbandonProcessGroup</key>
+	<true/>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>LimitLoadToSessionType</key>
 	<string>Aqua</string>
+	<key>StandardOutPath</key>
+	<string>{log_xml}</string>
+	<key>StandardErrorPath</key>
+	<string>{log_xml}</string>
 </dict>
 </plist>
 "#
@@ -374,6 +402,12 @@ fn enable_launch_agent() -> Result<(), String> {
     let plist_path = agent_plist_path()?;
     if let Some(parent) = plist_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create LaunchAgents dir: {e}"))?;
+    }
+    // Ensure log directory exists before launchd writes to it.
+    if let Some(log) = launch_agent_log_path() {
+        if let Some(dir) = log.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
     }
 
     let xml = launch_agent_plist_xml(exe_str);
