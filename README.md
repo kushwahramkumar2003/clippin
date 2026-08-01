@@ -13,7 +13,7 @@ Lightweight macOS menu-bar clipboard history manager. Local-first, native AppKit
 Installs ClipPin as a standalone binary in `~/.cargo/bin` (independent of this repo):
 
 ```bash
-cargo install --git https://github.com/YOUR_USERNAME/clippin.git --locked
+cargo install --git https://github.com/kushwahramkumar2003/clippin.git --locked
 ```
 
 > Replace `YOUR_USERNAME` with the GitHub owner of the repo.
@@ -29,7 +29,7 @@ source ~/.zshrc
 ### From a local clone
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/clippin.git
+git clone https://github.com/kushwahramkumar2003/clippin.git
 cd clippin
 cargo install --path . --locked
 ```
@@ -51,7 +51,7 @@ pkill -x clippin
 ### Update
 
 ```bash
-cargo install --git https://github.com/YOUR_USERNAME/clippin.git --locked --force
+cargo install --git https://github.com/kushwahramkumar2003/clippin.git --locked --force
 ```
 
 ### Uninstall
@@ -81,23 +81,23 @@ launchctl bootout "gui/$(id -u)/com.clippin.app" 2>/dev/null || true
 
 ## Usage
 
-| Action | How |
-|--------|-----|
-| Open | Click menu bar icon, or **⌘⇧V** |
-| Search | Type in the search field |
-| Copy item | Click a row |
-| Pin / unpin / delete | Right-click a row |
-| Settings | Gear icon in the popover |
-| Auto-paste | Enable in the toolbar; grant Accessibility when macOS asks |
+| Action               | How                                                        |
+| -------------------- | ---------------------------------------------------------- |
+| Open                 | Click menu bar icon, or **⌘⇧V**                            |
+| Search               | Type in the search field                                   |
+| Copy item            | Click a row                                                |
+| Pin / unpin / delete | Right-click a row                                          |
+| Settings             | Gear icon in the popover                                   |
+| Auto-paste           | Enable in the toolbar; grant Accessibility when macOS asks |
 
 ---
 
 ## Permissions
 
-| Permission | Why |
-|------------|-----|
-| **Accessibility** | Auto-paste simulates ⌘V into the frontmost app |
-| **Login item / LaunchAgent** | Launch at login |
+| Permission                   | Why                                            |
+| ---------------------------- | ---------------------------------------------- |
+| **Accessibility**            | Auto-paste simulates ⌘V into the frontmost app |
+| **Login item / LaunchAgent** | Launch at login                                |
 
 Grant Accessibility under:
 

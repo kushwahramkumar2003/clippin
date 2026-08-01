@@ -6,7 +6,7 @@ description = "A lightweight macOS menu-bar clipboard history manager"
 authors = ["ClipPin Contributors"]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/YOUR_USERNAME/clippin"
+repository = "https://github.com/kushwahramkumar2003/clippin"
 keywords = ["clipboard", "macos", "menu-bar", "productivity"]
 categories = ["gui", "os::macos-apis"]
 
