@@ -16,8 +16,6 @@ Installs ClipPin as a standalone binary in `~/.cargo/bin` (independent of this r
 cargo install --git https://github.com/kushwahramkumar2003/clippin.git --locked
 ```
 
-> Replace `YOUR_USERNAME` with the GitHub owner of the repo.
-
 Make sure Cargo’s bin directory is on your `PATH` (usually already is after installing Rust):
 
 ```bash
