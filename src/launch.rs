@@ -1,16 +1,21 @@
 //! Auto-launch at login.
 //!
-//! Primary path: `SMAppService` (macOS 13+). On recent macOS the class method is
-//! `+mainAppService` (older SDKs used `+mainApp`).
+//! Strategy (critical for production CLI installs):
 //!
-//! Fallback: a user LaunchAgent plist under `~/Library/LaunchAgents/` so
-//! `cargo run` / unpackaged binaries can still enable launch-at-login.
+//! * **Proper `.app` bundle** → `SMAppService` (Login Items, no Terminal).
+//! * **Bare binary** (`cargo install`, `~/.cargo/bin/clippin`) → **only** a
+//!   user LaunchAgent under `~/Library/LaunchAgents/`.
 //!
-//! Never panics if ServiceManagement / SMAppService is unavailable.
+//! Never register a bare Unix executable with `SMAppService` / Login Items:
+//! macOS often re-opens those via **Terminal.app** at login.
+//!
+//! LaunchAgents are started by `launchd` in the Aqua session — already
+//! detached from any terminal. Do **not** pass `--detach` there (nested
+//! spawn is unnecessary and can leave a short-lived console-looking job).
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use log::{info, warn};
@@ -24,6 +29,9 @@ extern "C" {}
 
 /// LaunchAgent label / plist basename (must match reverse-DNS of the app).
 const AGENT_LABEL: &str = "com.clippin.app";
+
+/// Env flag set by the LaunchAgent so the process knows it was auto-started.
+pub const AUTOSTART_ENV: &str = "CLIPPIN_AUTOSTART";
 
 /// Status from `SMAppService.status` (ServiceManagement), plus LaunchAgent mirror.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,43 +70,70 @@ impl LoginItemStatus {
     }
 }
 
-/// Query whether launch-at-login is active (SMAppService and/or LaunchAgent).
+/// True when this process lives inside `Something.app/Contents/MacOS/…`.
+///
+/// Only then is `SMAppService.mainApp` / Login Items the right API. Bare
+/// binaries must use a LaunchAgent or macOS may open Terminal at login.
+pub fn running_inside_app_bundle() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    path_is_inside_app_bundle(&exe)
+}
+
+fn path_is_inside_app_bundle(path: &Path) -> bool {
+    path.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .is_some_and(|s| s.ends_with(".app"))
+    })
+}
+
+/// Query whether launch-at-login is active.
 pub fn status() -> LoginItemStatus {
-    if let Some(s) = sm_status() {
-        if s.is_enabled() || matches!(s, LoginItemStatus::RequiresApproval) {
-            return s;
+    if running_inside_app_bundle() {
+        if let Some(s) = sm_status() {
+            if s.is_enabled() || matches!(s, LoginItemStatus::RequiresApproval) {
+                return s;
+            }
         }
-        // NotRegistered / NotFound / Unknown — fall through to agent check.
-        if launch_agent_is_enabled() {
-            return LoginItemStatus::Enabled;
-        }
-        return s;
     }
     if launch_agent_is_enabled() {
         LoginItemStatus::Enabled
+    } else if running_inside_app_bundle() {
+        sm_status().unwrap_or(LoginItemStatus::NotRegistered)
     } else {
         LoginItemStatus::NotRegistered
     }
 }
 
-/// Enable launch at login (SMAppService first, LaunchAgent fallback).
+/// Enable launch at login.
+///
+/// * `.app` → SMAppService (and clear any leftover LaunchAgent).
+/// * bare binary → LaunchAgent only (never SMAppService — avoids Terminal).
 pub fn enable() -> Result<LoginItemStatus, String> {
-    match sm_enable() {
-        Ok(st) if st.is_enabled() || matches!(st, LoginItemStatus::RequiresApproval) => {
-            // Prefer SM path; remove stale agent if any.
-            let _ = disable_launch_agent();
-            return Ok(st);
+    if running_inside_app_bundle() {
+        match sm_enable() {
+            Ok(st) if st.is_enabled() || matches!(st, LoginItemStatus::RequiresApproval) => {
+                let _ = disable_launch_agent();
+                return Ok(st);
+            }
+            Ok(st) => {
+                info!(
+                    "SMAppService enable returned {} — LaunchAgent fallback",
+                    st.describe()
+                );
+            }
+            Err(e) => {
+                info!("SMAppService enable failed ({e}) — LaunchAgent fallback");
+            }
         }
-        Ok(st) => {
-            info!(
-                "SMAppService enable returned {} — trying LaunchAgent fallback",
-                st.describe()
-            );
-        }
-        Err(e) => {
-            info!("SMAppService enable failed ({e}) — trying LaunchAgent fallback");
-        }
+    } else {
+        info!("bare binary — using LaunchAgent for login (no SMAppService / no Terminal)");
+        // Best-effort: clear any accidental prior SM registration for this binary.
+        let _ = sm_disable();
     }
+
     enable_launch_agent()?;
     Ok(LoginItemStatus::Enabled)
 }
@@ -107,15 +142,14 @@ pub fn enable() -> Result<LoginItemStatus, String> {
 pub fn disable() -> Result<LoginItemStatus, String> {
     let mut errs: Vec<String> = Vec::new();
 
-    match sm_disable() {
-        Ok(_) => {}
-        Err(e) => {
-            // Only record if SM was actually available / registered.
-            if sm_status().is_some() {
-                warn!("SMAppService disable: {e}");
-                errs.push(e);
-            }
+    if running_inside_app_bundle() {
+        if let Err(e) = sm_disable() {
+            warn!("SMAppService disable: {e}");
+            errs.push(e);
         }
+    } else {
+        // Still try unregister in case an older build registered SM for a bare binary.
+        let _ = sm_disable();
     }
 
     if let Err(e) = disable_launch_agent() {
@@ -144,7 +178,7 @@ pub fn set_enabled(want: bool) -> Result<LoginItemStatus, String> {
     }
 }
 
-// ── SMAppService ────────────────────────────────────────────────────────────
+// ── SMAppService (bundled .app only) ────────────────────────────────────────
 
 fn sm_status() -> Option<LoginItemStatus> {
     with_main_app(|service| {
@@ -193,6 +227,10 @@ fn sm_disable() -> Result<LoginItemStatus, String> {
         } else {
             let msg = nserror_description(err)
                 .unwrap_or_else(|| format!("unregister failed (status={})", st.describe()));
+            // Not registered is fine when disabling.
+            if st == LoginItemStatus::NotRegistered || st == LoginItemStatus::NotFound {
+                return Ok(st);
+            }
             warn!("SMAppService unregister failed: {msg}");
             Err(msg)
         }
@@ -236,7 +274,6 @@ fn with_main_app<T>(f: impl FnOnce(&AnyObject) -> T) -> Option<T> {
     ensure_framework_loaded();
     let cls = AnyClass::get(c"SMAppService")?;
 
-    // Prefer mainAppService (current macOS), fall back to mainApp (historical docs).
     let service: Option<Retained<AnyObject>> = {
         // SAFETY: class objects respond to NSObject protocol methods.
         let has_new: Bool =
@@ -283,7 +320,7 @@ fn nserror_description(err: *mut AnyObject) -> Option<String> {
     desc.map(|s| s.to_string())
 }
 
-// ── LaunchAgent fallback ────────────────────────────────────────────────────
+// ── LaunchAgent (bare binary / CLI production install) ──────────────────────
 
 fn agent_plist_path() -> Result<PathBuf, String> {
     let home = dirs_home().ok_or_else(|| "could not resolve home directory".to_string())?;
@@ -299,7 +336,6 @@ fn dirs_home() -> Option<PathBuf> {
 
 fn current_executable() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    // Resolve symlinks (cargo run uses target/debug/clippin via various links).
     fs::canonicalize(&exe).or_else(|_| Ok::<_, String>(exe))
 }
 
@@ -313,8 +349,12 @@ fn launch_agent_log_path() -> Option<PathBuf> {
     )
 }
 
+/// Build LaunchAgent plist.
+///
+/// Important: run the binary **directly** (no shell, no `--detach`).
+/// `launchd` already starts jobs outside Terminal; nesting `--detach` is
+/// what previously left confusing terminal-looking sessions.
 fn launch_agent_plist_xml(program: &str) -> String {
-    // Escape XML special chars in path / log path.
     let esc = |s: &str| {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -322,15 +362,10 @@ fn launch_agent_plist_xml(program: &str) -> String {
             .replace('"', "&quot;")
     };
     let program_xml = esc(program);
-    // Prefer a real log path; fall back to /dev/null so launchd never
-    // attaches a console / Terminal window.
     let log_xml = launch_agent_log_path()
-        .and_then(|p| p.to_str().map(|s| esc(s)))
+        .and_then(|p| p.to_str().map(esc))
         .unwrap_or_else(|| "/dev/null".into());
 
-    // Launch with `--detach` so login never leaves a Terminal-attached process:
-    // launchd starts a short-lived parent that re-spawns ClipPin in a new
-    // session and exits. AbandonProcessGroup keeps the child alive.
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -341,14 +376,16 @@ fn launch_agent_plist_xml(program: &str) -> String {
 	<key>ProgramArguments</key>
 	<array>
 		<string>{program_xml}</string>
-		<string>--detach</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>{AUTOSTART_ENV}</key>
+		<string>1</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<false/>
-	<key>AbandonProcessGroup</key>
-	<true/>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>LimitLoadToSessionType</key>
@@ -357,6 +394,8 @@ fn launch_agent_plist_xml(program: &str) -> String {
 	<string>{log_xml}</string>
 	<key>StandardErrorPath</key>
 	<string>{log_xml}</string>
+	<key>WorkingDirectory</key>
+	<string>/tmp</string>
 </dict>
 </plist>
 "#
@@ -364,7 +403,6 @@ fn launch_agent_plist_xml(program: &str) -> String {
 }
 
 fn uid() -> u32 {
-    // Prefer libc getuid via extern; no crate dependency needed on macOS.
     extern "C" {
         fn getuid() -> u32;
     }
@@ -379,7 +417,6 @@ fn launch_agent_is_enabled() -> bool {
     if !path.is_file() {
         return false;
     }
-    // Prefer launchctl print — domain entry exists when bootstrapped.
     let domain = format!("gui/{}", uid());
     let service = format!("{domain}/{AGENT_LABEL}");
     let out = Command::new("launchctl")
@@ -390,12 +427,16 @@ fn launch_agent_is_enabled() -> bool {
             return true;
         }
     }
-    // Plist on disk counts as "user wanted it on" even if not loaded this session.
+    // Plist on disk = user turned it on (may apply next login if not loaded).
     true
 }
 
 fn enable_launch_agent() -> Result<(), String> {
     let exe = current_executable()?;
+    if path_is_inside_app_bundle(&exe) {
+        // Bundled apps should use SMAppService; still allow agent as last resort.
+        info!("writing LaunchAgent for bundled binary at {}", exe.display());
+    }
     let exe_str = exe
         .to_str()
         .ok_or_else(|| "executable path is not UTF-8".to_string())?;
@@ -403,7 +444,6 @@ fn enable_launch_agent() -> Result<(), String> {
     if let Some(parent) = plist_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create LaunchAgents dir: {e}"))?;
     }
-    // Ensure log directory exists before launchd writes to it.
     if let Some(log) = launch_agent_log_path() {
         if let Some(dir) = log.parent() {
             let _ = fs::create_dir_all(dir);
@@ -417,35 +457,40 @@ fn enable_launch_agent() -> Result<(), String> {
         f.write_all(xml.as_bytes())
             .map_err(|e| format!("write LaunchAgent plist: {e}"))?;
     }
-    info!("wrote LaunchAgent {}", plist_path.display());
+    info!(
+        "wrote LaunchAgent {} → {} (direct launchd start, no Terminal)",
+        plist_path.display(),
+        exe_str
+    );
 
     let domain = format!("gui/{}", uid());
     let service = format!("{domain}/{AGENT_LABEL}");
+    let plist_str = plist_path
+        .to_str()
+        .ok_or_else(|| "plist path is not UTF-8".to_string())?;
 
-    // Tear down any previous bootstrap so ProgramArguments updates apply.
+    // Unload old definition so ProgramArguments / paths refresh.
     let _ = Command::new("launchctl")
         .args(["bootout", &service])
         .output();
+    // Also try path-based bootout (older style).
+    let _ = Command::new("launchctl")
+        .args(["bootout", &domain, plist_str])
+        .output();
 
     let bootstrap = Command::new("launchctl")
-        .args([
-            "bootstrap",
-            &domain,
-            plist_path
-                .to_str()
-                .ok_or_else(|| "plist path is not UTF-8".to_string())?,
-        ])
+        .args(["bootstrap", &domain, plist_str])
         .output()
         .map_err(|e| format!("launchctl bootstrap: {e}"))?;
 
     if !bootstrap.status.success() {
         let stderr = String::from_utf8_lossy(&bootstrap.stderr);
-        // "service already bootstrapped" — try enable/kickstart instead.
         if stderr.contains("already bootstrapped") || stderr.contains("already loaded") {
             let _ = Command::new("launchctl")
                 .args(["enable", &service])
                 .output();
-            info!("LaunchAgent already loaded; enabled {service}");
+            // Kickload replacement: bootout + bootstrap already attempted.
+            info!("LaunchAgent already present; enabled {service}");
             return Ok(());
         }
         return Err(format!(
@@ -458,7 +503,10 @@ fn enable_launch_agent() -> Result<(), String> {
         .args(["enable", &service])
         .output();
 
-    info!("LaunchAgent bootstrapped: {service} → {exe_str}");
+    // Do not `kickstart` here — that would immediately spawn a second ClipPin
+    // while the user is already in the UI. RunAtLoad applies at next login /
+    // next bootstrap after a clean session load.
+    info!("LaunchAgent ready for next login: {service}");
     Ok(())
 }
 
@@ -473,14 +521,12 @@ fn disable_launch_agent() -> Result<(), String> {
 
     if !bootout.status.success() {
         let stderr = String::from_utf8_lossy(&bootout.stderr);
-        // Not loaded is fine.
         if !stderr.is_empty()
             && !stderr.contains("No such process")
             && !stderr.contains("Could not find service")
             && !stderr.contains("not found")
             && !stderr.contains("No such file")
         {
-            // Continue to remove plist anyway.
             warn!("launchctl bootout: {}", stderr.trim());
         }
     }

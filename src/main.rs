@@ -46,7 +46,11 @@ fn main() {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    info!("ClipPin starting");
+    if env::var_os(launch::AUTOSTART_ENV).is_some() {
+        info!("ClipPin starting (launchd autostart — no Terminal)");
+    } else {
+        info!("ClipPin starting");
+    }
     app::run();
 }
 

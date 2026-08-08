@@ -50,10 +50,16 @@ clippin
 
 ClipPin lives in the **menu bar** (no Dock icon).
 
-**Launch at login** (Settings checkbox) installs a user LaunchAgent that starts ClipPin with `--detach` — no Terminal window at login.
+**Launch at login** (Settings checkbox):
+
+- **CLI / `cargo install` binary** → user LaunchAgent (`~/Library/LaunchAgents/com.clippin.app.plist`). Started by `launchd` at login — **no Terminal window**.
+- **Packaged `.app`** → macOS Login Items via `SMAppService`.
+
+After updating ClipPin, toggle **Launch at login** off → on once so the agent path is rewritten to the new binary.
 
 | | |
 |--|--|
+| **Manual background** | `clippin --detach` / `clippin -d` |
 | **Stop** | Quit from the popover, or `pkill -x clippin` |
 | **Logs** | `~/Library/Logs/ClipPin/clippin.log` |
 | **Help** | `clippin --help` |
